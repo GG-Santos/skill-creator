@@ -1,0 +1,37 @@
+---
+name: {skill_name}
+description: "[TODO: State what this reference-guided skill enables, when to use it, and a meaningful non-trigger boundary.]"
+---
+
+# {skill_title}
+
+## Outcome
+
+[TODO: Define the concrete task result.]
+
+## Routing
+
+Load only the reference needed for the current variant:
+
+| Condition | Reference | Purpose |
+|---|---|---|
+| [TODO: Variant or decision] | [TODO: references/file.md] | [TODO: Facts or schema it owns] |
+
+Do not load unrelated references.
+
+## Workflow
+
+1. Identify the request variant and required inputs.
+2. Read the directly mapped reference.
+3. [TODO: Apply the domain-specific procedure.]
+4. Verify the result against [TODO: authoritative rule or invariant].
+
+## Knowledge maintenance
+
+- Source of truth: [TODO: authoritative source or owner.]
+- Reverify when: [TODO: date, version, error, or environmental trigger.]
+- Unsupported variants: [TODO: boundary and handoff.]
+
+## Completion
+
+[TODO: Define output, evidence, and known-limit reporting.]

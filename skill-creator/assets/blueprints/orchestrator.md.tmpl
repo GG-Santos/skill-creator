@@ -1,0 +1,42 @@
+---
+name: {skill_name}
+description: "[TODO: State the coherent multi-mode job this skill orchestrates, its trigger contexts, and nearby work it must leave to other skills.]"
+---
+
+# {skill_title}
+
+## Outcome
+
+[TODO: Define the end-to-end result.]
+
+## Mode router
+
+| Mode | Use when | Inputs | Output contract |
+|---|---|---|---|
+| [TODO: mode] | [TODO] | [TODO] | [TODO] |
+
+Choose one primary mode before acting. Combine modes only when the output contract requires a handoff.
+
+## Shared invariants
+
+- [TODO: Safety or permission rule shared by every mode.]
+- [TODO: Canonical schema, naming rule, or ownership boundary.]
+- [TODO: Validation and completion rule.]
+
+## Handoffs
+
+| Producer | Consumer | Versioned payload | Failure owner |
+|---|---|---|---|
+| [TODO] | [TODO] | [TODO] | [TODO] |
+
+## Workflow
+
+1. Classify the request and state the selected mode.
+2. Load only the relevant reference or specialist contract.
+3. Execute the mode-specific procedure.
+4. Validate every handoff before the next mode.
+5. Verify the end-to-end result and report partial failures.
+
+## Boundaries
+
+[TODO: Define cycle prevention, idempotency, unsupported combinations, and escalation.]

@@ -1,0 +1,60 @@
+name: Codex skill quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Change these fixed repository-relative paths after copying this template.
+  SKILL_CREATOR_PATH: .codex/skills/skill-creator
+  SKILL_PATH: .codex/skills/example-skill
+  PACKAGE_PATH: dist/example-skill.skill
+
+jobs:
+  validate-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+
+      - name: Install validator dependency
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --no-input PyYAML==6.0.3
+
+      - name: Run retained tooling tests
+        shell: bash
+        run: python -m unittest discover -s "$SKILL_CREATOR_PATH/tests" -v
+
+      - name: Strictly validate skill
+        shell: bash
+        run: |
+          python "$SKILL_CREATOR_PATH/scripts/validate_skill.py" "$SKILL_CREATOR_PATH" --strict
+          python "$SKILL_CREATOR_PATH/scripts/validate_skill.py" "$SKILL_PATH" --strict
+
+      - name: Build and verify twice
+        shell: bash
+        run: |
+          mkdir -p dist
+          python "$SKILL_CREATOR_PATH/scripts/package_skill.py" "$SKILL_PATH" --strict --output "$PACKAGE_PATH"
+          python "$SKILL_CREATOR_PATH/scripts/verify_package.py" "$PACKAGE_PATH"
+          first_hash="$(sha256sum "$PACKAGE_PATH" | cut -d ' ' -f 1)"
+          second_package="${PACKAGE_PATH%.skill}-rebuild.skill"
+          python "$SKILL_CREATOR_PATH/scripts/package_skill.py" "$SKILL_PATH" --strict --output "$second_package"
+          second_hash="$(sha256sum "$second_package" | cut -d ' ' -f 1)"
+          test "$first_hash" = "$second_hash"

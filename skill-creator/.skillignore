@@ -1,0 +1,3 @@
+# Local evaluation evidence and generated release output are not shipped.
+eval-results/
+benchmark-output/

@@ -1,0 +1,47 @@
+---
+name: {skill_name}
+description: "[TODO: State the evaluated capability, realistic triggers, and precision boundary for this skill.]"
+---
+
+# {skill_title}
+
+## Contract
+
+- Outcome: [TODO]
+- Inputs: [TODO]
+- Outputs: [TODO]
+- Side effects and authorization: [TODO]
+- Non-goals: [TODO]
+
+## Workflow
+
+1. [TODO: Inspect and classify.]
+2. [TODO: Execute the task-specific process.]
+3. [TODO: Verify observable outcomes.]
+4. Retain evidence required by the evaluation assertions.
+
+## Failure and safety behavior
+
+| Condition | Required response | Evidence |
+|---|---|---|
+| [TODO] | [TODO] | [TODO] |
+
+## Evaluation contract
+
+The maintained suite in `evals/evals.json` covers:
+
+- positive and difficult valid requests;
+- plausible near-misses;
+- permission and safety boundaries;
+- regression cases;
+- at least one held-out case.
+
+Paired runs use independent `baseline` and `with_skill` contexts. Grade from actual artifacts under identical assertions.
+
+## Release gates
+
+- Strict structural validation passes.
+- [TODO: Core correctness threshold.]
+- [TODO: Mandatory safety threshold.]
+- [TODO: Regression and efficiency tolerance.]
+- Known limits and candidate identity are recorded.

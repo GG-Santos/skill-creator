@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex Skill Evaluation</title>
+<link rel="icon" href="__ASSET_PREFIX__assets/skill-creator-small.svg" type="image/svg+xml">
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<div id="app">
+  <header class="app-header">
+    <div class="brand-block">
+      <img class="brand-mark" src="__ASSET_PREFIX__assets/skill-creator.png" alt="" aria-hidden="true">
+      <div class="eyebrow">Codex Skill Evaluation</div>
+      <h1 id="skill-name">Skill Review</h1>
+    </div>
+    <div class="top-actions">
+      <button id="btn-finalize" class="primary-command">Finalize</button>
+      <button id="btn-theme" class="tertiary-command icon-command" aria-label="Switch color profile" data-tooltip="Switch profile"></button>
+      <details class="action-menu">
+        <summary class="icon-command" aria-label="More actions" data-tooltip="More"></summary>
+        <div class="action-popover" role="menu">
+          <div class="menu-label">Export</div>
+          <button id="btn-export-bundle">Export review bundle</button>
+          <button id="btn-export-md">Export summary.md</button>
+          <button id="btn-mobile-details-menu">Review details</button>
+          <div class="menu-divider"></div>
+          <button id="btn-reset" class="danger-command">Reset review</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="index-panel" aria-label="Review index">
+      <div class="panel-inner">
+        <div class="progress-row index-progress-row" aria-label="Review progress">
+          <span id="progress-label">0 of 0 complete</span>
+          <span id="save-state" aria-label="Autosaved" data-tooltip="Autosaved"></span>
+        </div>
+        <div class="progress-track index-progress-track" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="index-tools">
+          <label class="field-group">
+            <span class="field-label">Search runs</span>
+            <input id="search" type="search" autocomplete="off" placeholder="Run, config, output" aria-label="Search runs">
+          </label>
+          <div class="field-group">
+            <span class="field-label">Filter</span>
+            <div id="filter-control"></div>
+          </div>
+        </div>
+        <div class="run-list" id="run-list" role="listbox" aria-label="Runs"></div>
+      </div>
+    </aside>
+
+    <main class="reader-panel" id="main" tabindex="-1">
+      <div class="reader-head">
+        <div>
+          <h2 id="run-title">No run selected</h2>
+          <div id="run-summary"></div>
+        </div>
+      </div>
+      <nav class="view-switch" id="tabs" aria-label="Review views" role="tablist">
+        <button id="review-tab" data-tab="review" role="tab" aria-controls="main-content">Review</button>
+        <button id="benchmark-tab" data-tab="benchmark" role="tab" aria-controls="main-content">Benchmark</button>
+        <button id="feedback-tab" data-tab="feedback" role="tab" aria-controls="main-content">Feedback</button>
+      </nav>
+      <div class="reader-scroll" id="main-content" role="tabpanel"></div>
+    </main>
+
+    <aside class="review-dock" aria-label="Reviewer controls">
+      <div id="review-dock-content"></div>
+    </aside>
+  </div>
+</div>
+
+<div class="modal" id="submit-modal" role="dialog" aria-modal="true" aria-labelledby="submit-title" aria-describedby="submit-message" aria-hidden="true">
+  <div class="modal-card">
+    <header>
+      <h2 id="submit-title">Review not complete</h2>
+      <button id="btn-close-submit" class="icon-command modal-close" aria-label="Close" data-tooltip="Close"></button>
+    </header>
+    <div class="modal-body">
+      <p id="submit-message"></p>
+      <div id="submit-issues"></div>
+      <div class="modal-actions">
+        <button id="btn-submit-override" class="primary-command">Finalize anyway</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="bulk-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-title" aria-describedby="bulk-message" aria-hidden="true">
+  <div class="modal-card">
+    <header>
+      <h2 id="bulk-title">Bulk approve visible</h2>
+      <button id="btn-close-bulk" class="icon-command modal-close" aria-label="Close" data-tooltip="Close"></button>
+    </header>
+    <div class="modal-body">
+      <div id="bulk-message"></div>
+      <label class="readiness-check"><input id="bulk-passing-only" type="checkbox" checked> Only approve runs without failed grades</label>
+      <label class="field-group"><span class="field-label">Optional note</span><textarea id="bulk-note" rows="3" placeholder="Append a short note to approved runs."></textarea></label>
+      <label class="field-group"><span class="field-label">Confirm affected count</span><input id="bulk-confirm-count" inputmode="numeric" autocomplete="off" placeholder="Type the count shown above"></label>
+      <div class="modal-actions">
+        <button id="btn-bulk-confirm" class="primary-command">Bulk approve visible</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mobile-review-bar" id="mobile-review-bar" aria-label="Mobile review controls"></div>
+<div class="mobile-sheet" id="mobile-sheet" aria-hidden="true">
+  <div class="mobile-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="mobile-sheet-title" aria-describedby="mobile-sheet-description" tabindex="-1">
+    <header>
+      <h2 id="mobile-sheet-title">Details</h2>
+      <button id="btn-close-mobile-sheet" class="icon-command modal-close" aria-label="Close" data-tooltip="Close"></button>
+    </header>
+    <p id="mobile-sheet-description" class="visually-hidden">Review status, severity, feedback, snippets, and required completion checks for the current run.</p>
+    <div id="mobile-sheet-content"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="tooltip-bubble" id="tooltip-bubble" aria-hidden="true"></div>
+
+<script>
+/*__BOOTSTRAP_DATA__*/
+</script>
+<script src="viewer.js" defer></script>
+</body>
+</html>
