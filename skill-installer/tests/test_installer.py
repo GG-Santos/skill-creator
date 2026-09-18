@@ -247,6 +247,23 @@ class InstallerTests(unittest.TestCase):
             installer._copy_skills_transactionally([(str(source), str(destination))])
         self.assertTrue(installer.os.path.lexists(destination))
 
+    def test_copy_refuses_destination_symlink_ancestor(self) -> None:
+        source = self._skill(self.root / "sources", "linked-parent")
+        real_destination = self.root / "real-destination"
+        real_destination.mkdir()
+        alias = self.root / "destination-alias"
+        try:
+            alias.symlink_to(real_destination, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlinks are unavailable: {exc}")
+
+        destination = alias / "linked-parent"
+        with self.assertRaisesRegex(installer.InstallError, "Destination paths"):
+            installer._copy_skills_transactionally(
+                [(str(source), str(destination))]
+            )
+        self.assertFalse((real_destination / "linked-parent").exists())
+
     def test_incomplete_rollback_is_reported(self) -> None:
         source = self._skill(self.root / "rollback-sources", "rollback-skill")
         destination = self.root / "rollback-dest" / "rollback-skill"
@@ -357,6 +374,8 @@ class InstallerTests(unittest.TestCase):
                         "skills/demo-skill",
                         "--dest",
                         str(destination),
+                        "--inspection-policy",
+                        "skip",
                     ]
                 )
         self.assertEqual(0, result)

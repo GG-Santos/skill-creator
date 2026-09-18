@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill Inspector"
+  short_description: "Security-check agent skills before installation"
+  default_prompt: "Use $skill-inspector to inspect this agent skill and give me an evidence-backed install verdict."
+
+policy:
+  allow_implicit_invocation: true

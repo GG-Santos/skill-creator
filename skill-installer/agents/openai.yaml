@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Skill Installer"
-  short_description: "List and safely install Codex skills from GitHub"
+  short_description: "Stage, inspect, and safely install Codex skills"
   icon_small: "./assets/skill-installer-small.svg"
   icon_large: "./assets/skill-installer.png"
   brand_color: "#10A37F"
-  default_prompt: "Use $skill-installer to list or install the requested Codex skill."
+  default_prompt: "Use $skill-installer to list or install the requested Codex skill. Stage and validate exact bytes, and use $skill-inspector when the inspection policy requires a pre-install security gate."

@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import hashlib
 import hmac
+import json
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -20,10 +22,19 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import zipfile
+from typing import Any, Mapping
 
 import yaml
 
 from github_utils import ResponseTooLargeError, github_request
+from inspection_gate import (
+    InspectionGateError,
+    TREE_HASH_ALGORITHM,
+    TargetIdentity,
+    hash_skill_tree,
+    reports_by_digest,
+    verify_loaded_report,
+)
 
 
 DEFAULT_REF = "main"
@@ -50,6 +61,9 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+PLAN_SCHEMA_VERSION = "skill-install-plan/v1"
+MAX_PLAN_BYTES = 4 * 1024 * 1024
+INSPECTION_POLICIES = {"auto", "required", "skip"}
 
 
 @dataclass
@@ -66,6 +80,12 @@ class Args:
     max_entries: int = DEFAULT_MAX_ENTRIES
     max_unpacked_mib: int = DEFAULT_MAX_UNPACKED_MIB
     max_compression_ratio: float = DEFAULT_MAX_COMPRESSION_RATIO
+    prepare_only: bool = False
+    plan_output: str | None = None
+    commit_plan: str | None = None
+    inspection_report: list[str] | None = None
+    inspection_policy: str = "auto"
+    allow_caution: bool = False
 
 
 @dataclass
@@ -491,6 +511,17 @@ def _reject_symlink_components(path: str, repo_root: str) -> None:
             raise InstallError(f"Symbolic links or junctions are not allowed: {display}")
 
 
+def _reject_destination_link_components(path: str) -> None:
+    absolute = Path(os.path.abspath(path))
+    candidates = [*reversed(absolute.parents), absolute]
+    for candidate in candidates:
+        if os.path.lexists(candidate) and _is_link_like(str(candidate)):
+            raise InstallError(
+                "Destination paths may not contain symbolic links or junctions: "
+                f"{candidate}"
+            )
+
+
 def _validate_skill(
     path: str,
     repo_root: str,
@@ -569,21 +600,45 @@ def _validate_skill(
         )
 
 
-def _copy_skills_transactionally(plans: list[tuple[str, str]]) -> None:
-    staged: list[tuple[str, str]] = []
+def _assert_skill_identity(
+    path: str, expected: TargetIdentity, *, phase: str
+) -> None:
+    try:
+        actual = hash_skill_tree(Path(path))
+    except InspectionGateError as exc:
+        raise InstallError(f"Could not verify {phase} skill bytes: {exc}") from exc
+    if actual != expected:
+        raise InstallError(
+            f"Skill bytes changed during {phase}; the inspection report is stale."
+        )
+
+
+def _copy_skills_transactionally(
+    plans: list[tuple[str, str]],
+    expected_identities: list[TargetIdentity] | None = None,
+) -> None:
+    if expected_identities is not None and len(expected_identities) != len(plans):
+        raise InstallError("Expected identity count does not match the installation plan.")
+    staged: list[tuple[str, str, TargetIdentity | None]] = []
     committed: list[tuple[str, tuple[int, int]]] = []
     try:
-        for source, destination in plans:
+        for index, (source, destination) in enumerate(plans):
+            expected = expected_identities[index] if expected_identities is not None else None
             parent = os.path.dirname(destination)
+            _reject_destination_link_components(parent)
             os.makedirs(parent, exist_ok=True)
+            _reject_destination_link_components(parent)
             if os.path.lexists(destination):
                 raise InstallError(f"Destination already exists: {destination}")
             skill_name = os.path.basename(destination)
             staging = tempfile.mkdtemp(prefix=f".{skill_name}-install-", dir=parent)
-            staged.append((staging, destination))
+            staged.append((staging, destination, expected))
             shutil.copytree(source, staging, dirs_exist_ok=True, symlinks=False)
+            if expected is not None:
+                _assert_skill_identity(staging, expected, phase="destination-side staging")
 
-        for staging, destination in staged:
+        for staging, destination, expected in staged:
+            _reject_destination_link_components(os.path.dirname(destination))
             try:
                 os.mkdir(destination)
             except FileExistsError as exc:
@@ -602,15 +657,25 @@ def _copy_skills_transactionally(plans: list[tuple[str, str]]) -> None:
                     ) from metadata_error
                 raise
             committed.append((destination, (metadata.st_dev, metadata.st_ino)))
+            if _is_link_like(destination):
+                raise InstallError(
+                    f"Reserved destination became a symbolic link or junction: {destination}"
+                )
             shutil.copytree(staging, destination, dirs_exist_ok=True, symlinks=False)
             shutil.copystat(staging, destination, follow_symlinks=False)
-    except (InstallError, OSError, shutil.Error) as exc:
+            if expected is not None:
+                _assert_skill_identity(destination, expected, phase="final installation")
+    except (InstallError, InspectionGateError, OSError, shutil.Error) as exc:
         rollback_errors: list[str] = []
         for destination, identity in reversed(committed):
             try:
                 metadata = os.stat(destination, follow_symlinks=False)
                 current_identity = (metadata.st_dev, metadata.st_ino)
-                if not stat.S_ISDIR(metadata.st_mode) or current_identity != identity:
+                if (
+                    _is_link_like(destination)
+                    or not stat.S_ISDIR(metadata.st_mode)
+                    or current_identity != identity
+                ):
                     rollback_errors.append(
                         f"refused to remove changed destination {destination}"
                     )
@@ -626,7 +691,7 @@ def _copy_skills_transactionally(plans: list[tuple[str, str]]) -> None:
             message += " Rollback incomplete: " + "; ".join(rollback_errors)
         raise InstallError(message) from exc
     finally:
-        for staging, _ in staged:
+        for staging, _, _ in staged:
             if os.path.isdir(staging):
                 shutil.rmtree(staging, ignore_errors=True)
 
@@ -634,6 +699,267 @@ def _copy_skills_transactionally(plans: list[tuple[str, str]]) -> None:
 def _copy_skills_atomically(plans: list[tuple[str, str]]) -> None:
     """Compatibility wrapper for the former private helper name."""
     _copy_skills_transactionally(plans)
+
+
+def _identity_to_json(identity: TargetIdentity) -> dict[str, Any]:
+    return {
+        "algorithm": identity.algorithm,
+        "digest": identity.digest,
+        "entries": identity.entries,
+        "bytes": identity.bytes,
+    }
+
+
+def _identity_from_json(value: object) -> TargetIdentity:
+    if not isinstance(value, Mapping):
+        raise InstallError("Install plan target identity must be an object.")
+    algorithm = value.get("algorithm")
+    digest = value.get("digest")
+    entries = value.get("entries")
+    byte_count = value.get("bytes")
+    if algorithm != TREE_HASH_ALGORITHM:
+        raise InstallError("Install plan uses an unsupported target-hash algorithm.")
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+        raise InstallError("Install plan contains an invalid target digest.")
+    if isinstance(entries, bool) or not isinstance(entries, int) or entries < 0:
+        raise InstallError("Install plan target entry count is invalid.")
+    if isinstance(byte_count, bool) or not isinstance(byte_count, int) or byte_count < 0:
+        raise InstallError("Install plan target byte count is invalid.")
+    return TargetIdentity(algorithm, digest.lower(), entries, byte_count)
+
+
+def _is_official_curated_source(source: Source) -> bool:
+    if source.owner.casefold() != "openai" or source.repo.casefold() != "skills":
+        return False
+    return bool(source.paths) and all(
+        tuple(part.casefold() for part in PurePosixPath(path).parts[:2])
+        == ("skills", ".curated")
+        for path in source.paths
+    )
+
+
+def _inspection_is_required(source: Source, policy: str) -> bool:
+    if policy not in INSPECTION_POLICIES:
+        raise InstallError(f"Unsupported inspection policy: {policy}")
+    if policy == "skip":
+        return False
+    if policy == "required":
+        return True
+    return not _is_official_curated_source(source)
+
+
+def _verify_inspection_reports(
+    identities: list[TargetIdentity],
+    report_paths: list[str],
+    *,
+    required: bool,
+    allow_caution: bool,
+) -> list[str]:
+    if not report_paths:
+        if required:
+            raise InstallError(
+                "Inspection is required for this source. Prepare the exact bytes with "
+                "--prepare-only --plan-output, inspect each staged skill with skill-inspector, "
+                "then use --commit-plan with --inspection-report."
+            )
+        return []
+    try:
+        indexed = reports_by_digest([Path(path) for path in report_paths])
+        decisions: list[str] = []
+        expected_digests = {identity.digest for identity in identities}
+        extra = set(indexed) - expected_digests
+        if extra:
+            raise InspectionGateError(
+                "An inspection report does not belong to any selected skill: "
+                + ", ".join(sorted(extra))
+            )
+        for identity in identities:
+            report = indexed.get(identity.digest)
+            if report is None:
+                raise InspectionGateError(
+                    f"No inspection report matches staged skill digest {identity.digest}."
+                )
+            decision = verify_loaded_report(
+                report, identity, allow_caution=allow_caution
+            )
+            decisions.append(
+                f"{identity.digest}: {decision.verdict}/{decision.gate_decision} "
+                f"({decision.report_path})"
+            )
+        return decisions
+    except (InspectionGateError, OSError) as exc:
+        raise InstallError(f"Inspection gate failed: {exc}") from exc
+
+
+def _plan_and_stage_paths(plan_output: str) -> tuple[Path, Path]:
+    plan_path = Path(plan_output).expanduser().resolve(strict=False)
+    if os.path.lexists(str(plan_path)):
+        raise InstallError(f"Plan output already exists: {plan_path}")
+    stage_root = plan_path.parent / f"{plan_path.name}.stage"
+    if os.path.lexists(str(stage_root)):
+        raise InstallError(f"Plan staging directory already exists: {stage_root}")
+    return plan_path, stage_root
+
+
+def _write_json_exclusive(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise InstallError(f"Plan output already exists: {path}") from exc
+
+
+def _create_install_plan(
+    *,
+    plan_output: str,
+    source: Source,
+    prepared: PreparedRepo,
+    selected: list[tuple[str, str]],
+    destination_root: str,
+    limits: Limits,
+) -> tuple[Path, Path, list[TargetIdentity]]:
+    plan_path, stage_root = _plan_and_stage_paths(plan_output)
+    stage_root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        stage_root.mkdir()
+        skills: list[dict[str, Any]] = []
+        identities: list[TargetIdentity] = []
+        for name, source_path in selected:
+            staged_path = stage_root / name
+            shutil.copytree(source_path, staged_path, symlinks=False)
+            _validate_skill(str(staged_path), str(stage_root), name, limits)
+            try:
+                identity = hash_skill_tree(staged_path)
+            except InspectionGateError as exc:
+                raise InstallError(f"Could not hash staged skill {name}: {exc}") from exc
+            identities.append(identity)
+            skills.append(
+                {
+                    "name": name,
+                    "staged_path": name,
+                    "target": _identity_to_json(identity),
+                }
+            )
+        plan = {
+            "schema_version": PLAN_SCHEMA_VERSION,
+            "created_at": datetime.now(UTC).isoformat(),
+            "source": {
+                "owner": source.owner,
+                "repo": source.repo,
+                "requested_ref": source.ref,
+                "method": prepared.method,
+                "resolved_revision": prepared.revision,
+            },
+            "destination_root": destination_root,
+            "stage_directory": stage_root.name,
+            "skills": skills,
+        }
+        _write_json_exclusive(plan_path, plan)
+        return plan_path, stage_root, identities
+    except (InstallError, OSError, shutil.Error):
+        if stage_root.is_dir():
+            shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+
+
+def _load_install_plan(path: str) -> tuple[Path, Mapping[str, Any]]:
+    plan_path = Path(path).expanduser()
+    if plan_path.is_symlink():
+        raise InstallError(f"Refusing symbolic-link install plan: {plan_path}")
+    try:
+        plan_path = plan_path.resolve(strict=True)
+        size = plan_path.stat().st_size
+    except OSError as exc:
+        raise InstallError(f"Could not read install plan {plan_path}: {exc}") from exc
+    if size > MAX_PLAN_BYTES:
+        raise InstallError(f"Install plan exceeds the {MAX_PLAN_BYTES}-byte limit.")
+    try:
+        value = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InstallError(f"Install plan is not valid UTF-8 JSON: {exc}") from exc
+    if not isinstance(value, Mapping) or value.get("schema_version") != PLAN_SCHEMA_VERSION:
+        raise InstallError(f"Expected an {PLAN_SCHEMA_VERSION} install plan.")
+    return plan_path, value
+
+
+def _commit_install_plan(
+    args: Args, limits: Limits
+) -> tuple[str, list[tuple[str, str]], list[str]]:
+    if not args.commit_plan:
+        raise AssertionError("Missing commit plan")
+    if args.inspection_policy == "skip":
+        raise InstallError("--commit-plan always requires inspection reports; skip is not allowed.")
+    report_paths = list(args.inspection_report or [])
+    if not report_paths:
+        raise InstallError("--commit-plan requires at least one --inspection-report.")
+
+    plan_path, plan = _load_install_plan(args.commit_plan)
+    stage_directory = plan.get("stage_directory")
+    expected_stage_name = f"{plan_path.name}.stage"
+    if stage_directory != expected_stage_name:
+        raise InstallError("Install plan staging directory is not bound to the plan path.")
+    stage_root = plan_path.parent / expected_stage_name
+    if stage_root.is_symlink() or not stage_root.is_dir():
+        raise InstallError(f"Install plan staging directory is unavailable: {stage_root}")
+
+    raw_destination = args.dest or plan.get("destination_root")
+    if not isinstance(raw_destination, str) or not raw_destination.strip():
+        raise InstallError("Install plan has no valid destination root.")
+    destination_root = os.path.abspath(raw_destination)
+    raw_skills = plan.get("skills")
+    if not isinstance(raw_skills, list) or not raw_skills:
+        raise InstallError("Install plan must contain at least one staged skill.")
+
+    plans: list[tuple[str, str]] = []
+    identities: list[TargetIdentity] = []
+    installed: list[tuple[str, str]] = []
+    destination_keys: set[str] = set()
+    for item in raw_skills:
+        if not isinstance(item, Mapping):
+            raise InstallError("Install plan skill entries must be objects.")
+        name = item.get("name")
+        staged_relative = item.get("staged_path")
+        if not isinstance(name, str):
+            raise InstallError("Install plan skill name is invalid.")
+        _validate_skill_name(name)
+        if staged_relative != name:
+            raise InstallError("Install plan staged paths must exactly match skill names.")
+        expected = _identity_from_json(item.get("target"))
+        staged_path = stage_root / name
+        _validate_skill(str(staged_path), str(stage_root), name, limits)
+        _assert_skill_identity(str(staged_path), expected, phase="plan commit")
+        destination = os.path.join(destination_root, name)
+        destination_key = os.path.normcase(os.path.abspath(destination))
+        if destination_key in destination_keys:
+            raise InstallError(f"Duplicate destination in install plan: {destination}")
+        destination_keys.add(destination_key)
+        if os.path.lexists(destination):
+            raise InstallError(f"Destination already exists: {destination}")
+        plans.append((str(staged_path), destination))
+        identities.append(expected)
+        installed.append((name, destination))
+
+    decisions = _verify_inspection_reports(
+        identities,
+        report_paths,
+        required=True,
+        allow_caution=args.allow_caution,
+    )
+    _copy_skills_transactionally(plans, identities)
+    raw_source = plan.get("source")
+    if isinstance(raw_source, Mapping):
+        source_label = (
+            f"{raw_source.get('owner', '?')}/{raw_source.get('repo', '?')}"
+            f"@{raw_source.get('requested_ref', '?')} via {raw_source.get('method', '?')} "
+            f"({raw_source.get('resolved_revision', '?')})"
+        )
+    else:
+        source_label = f"install plan {plan_path}"
+    return source_label, installed, decisions
 
 
 def _build_repo_url(owner: str, repo: str) -> str:
@@ -764,6 +1090,10 @@ def _parse_args(argv: list[str]) -> Args:
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--repo", help="GitHub owner/repo")
     source_group.add_argument("--url", help="https://github.com/owner/repo[/tree/ref/path]")
+    source_group.add_argument(
+        "--commit-plan",
+        help="Commit a previously prepared skill-install-plan/v1 without network access",
+    )
     parser.add_argument("--path", nargs="+", help="Path(s) to skills inside the repository")
     parser.add_argument("--ref", default=DEFAULT_REF)
     parser.add_argument("--dest", help="Destination skills directory")
@@ -796,12 +1126,72 @@ def _parse_args(argv: list[str]) -> Args:
     parser.add_argument(
         "--max-compression-ratio", type=float, default=DEFAULT_MAX_COMPRESSION_RATIO
     )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Stage and validate exact skill bytes for inspection without installing",
+    )
+    parser.add_argument(
+        "--plan-output",
+        help="New JSON plan path required with --prepare-only",
+    )
+    parser.add_argument(
+        "--inspection-report",
+        action="append",
+        help="Final skill-inspection/v1 report; repeat once per selected skill",
+    )
+    parser.add_argument(
+        "--inspection-policy",
+        choices=sorted(INSPECTION_POLICIES),
+        default="auto",
+        help=(
+            "auto requires inspection except for openai/skills/.curated; "
+            "required always gates; skip is an explicit bypass"
+        ),
+    )
+    parser.add_argument(
+        "--allow-caution",
+        action="store_true",
+        help="Explicitly accept a complete CAUTION/PROMPT report (never overrides BLOCK)",
+    )
     return parser.parse_args(argv, namespace=Args())
 
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     try:
+        if args.commit_plan:
+            if args.prepare_only or args.plan_output or args.path or args.expected_name:
+                raise InstallError(
+                    "--commit-plan cannot be combined with source, path, name, or prepare options."
+                )
+            if args.archive_sha256:
+                raise InstallError("--archive-sha256 is not valid with --commit-plan.")
+            limits = _limits(args)
+            source_label, installed, decisions = _commit_install_plan(args, limits)
+            print(f"Source: {source_label}")
+            for decision in decisions:
+                print(f"Inspection: {decision}")
+            for skill_name, destination in installed:
+                print(f"Installed {skill_name} to {destination}")
+            return 0
+
+        if args.prepare_only != bool(args.plan_output):
+            raise InstallError("--prepare-only and --plan-output must be used together.")
+        if args.prepare_only and args.inspection_policy == "skip":
+            raise InstallError("--prepare-only is for inspected installs and cannot use policy skip.")
+        if args.prepare_only and args.inspection_report:
+            raise InstallError("Inspection reports are supplied when committing, not preparing, a plan.")
+        if args.plan_output and not args.prepare_only:
+            raise InstallError("--plan-output requires --prepare-only.")
+        if args.inspection_policy == "skip" and args.inspection_report:
+            raise InstallError(
+                "Do not supply inspection reports with --inspection-policy skip; "
+                "the combination would be ambiguous."
+            )
+        if args.allow_caution and not args.inspection_report:
+            raise InstallError("--allow-caution requires at least one --inspection-report.")
+
         if args.archive_sha256:
             if not SHA256_RE.fullmatch(args.archive_sha256):
                 raise InstallError("--archive-sha256 must contain exactly 64 hexadecimal characters.")
@@ -819,6 +1209,8 @@ def main(argv: list[str]) -> int:
         try:
             prepared = _prepare_repo(source, args, limits, tmp_dir)
             plans: list[tuple[str, str]] = []
+            selected: list[tuple[str, str]] = []
+            identities: list[TargetIdentity] = []
             destination_keys: set[str] = set()
             installed: list[tuple[str, str]] = []
             for relative_path in source.paths:
@@ -840,10 +1232,46 @@ def main(argv: list[str]) -> int:
                     args.expected_name or skill_name,
                     limits,
                 )
+                try:
+                    identity = hash_skill_tree(Path(skill_source))
+                except InspectionGateError as exc:
+                    raise InstallError(
+                        f"Could not identify selected skill {skill_name}: {exc}"
+                    ) from exc
                 plans.append((skill_source, destination))
+                selected.append((skill_name, skill_source))
+                identities.append(identity)
                 installed.append((skill_name, destination))
 
-            _copy_skills_transactionally(plans)
+            if args.prepare_only:
+                plan_path, stage_root, staged_identities = _create_install_plan(
+                    plan_output=args.plan_output or "",
+                    source=source,
+                    prepared=prepared,
+                    selected=selected,
+                    destination_root=dest_root,
+                    limits=limits,
+                )
+                print(
+                    f"Source: {source.owner}/{source.repo}@{source.ref} via {prepared.method} "
+                    f"({prepared.revision})"
+                )
+                print(f"Prepared install plan: {plan_path}")
+                for (skill_name, _), identity in zip(selected, staged_identities, strict=True):
+                    print(
+                        f"Inspect {skill_name}: {stage_root / skill_name} "
+                        f"({identity.algorithm}:{identity.digest})"
+                    )
+                return 0
+
+            inspection_required = _inspection_is_required(source, args.inspection_policy)
+            decisions = _verify_inspection_reports(
+                identities,
+                list(args.inspection_report or []),
+                required=inspection_required,
+                allow_caution=args.allow_caution,
+            )
+            _copy_skills_transactionally(plans, identities)
         finally:
             if os.path.isdir(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -852,6 +1280,8 @@ def main(argv: list[str]) -> int:
             f"Source: {source.owner}/{source.repo}@{source.ref} via {prepared.method} "
             f"({prepared.revision})"
         )
+        for decision in decisions:
+            print(f"Inspection: {decision}")
         for skill_name, destination in installed:
             print(f"Installed {skill_name} to {destination}")
         return 0

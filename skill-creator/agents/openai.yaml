@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Skill Creator"
-  short_description: "Design, audit, evaluate, and evolve Codex skills"
+  short_description: "Design, evaluate, connect, and release Codex skills"
   icon_small: "./assets/skill-creator-small.svg"
   icon_large: "./assets/skill-creator.png"
   brand_color: "#10A37F"
-  default_prompt: "Use $skill-creator to create, augment, audit, evaluate, or connect Codex skills for this request."
+  default_prompt: "Use $skill-creator to create, improve, evaluate, connect, or release the requested Codex skill, delegating explicit security gates to $skill-inspector."

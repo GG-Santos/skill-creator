@@ -1,0 +1,21 @@
+Skill Inspector
+
+This Codex skill and adapter are distributed under the Apache License 2.0.
+
+The security-review workflow is adapted from the `skill-inspector` skill in
+NVIDIA SkillSpector. The adapter consumes NVIDIA SkillSpector's documented CLI
+and JSON interfaces but does not bundle the SkillSpector runtime.
+
+Copyright 2026 NVIDIA CORPORATION & AFFILIATES
+
+Upstream project: https://github.com/NVIDIA/SkillSpector
+Reviewed local snapshot: declared package version 2.11.2; the downloaded folder
+did not contain Git metadata, so no upstream commit identity is claimed.
+
+Local modifications include Codex-specific routing, portable Windows/Linux/macOS
+execution, an external-CLI adapter, a versioned handoff contract, fail-closed
+gate behavior, evaluation scenarios, and fake-scanner regression tests.
+
+NVIDIA and SkillSpector names are used only to describe origin and compatibility.
+No NVIDIA endorsement is claimed. A separately installed SkillSpector runtime
+retains its own license, third-party notices, versioning, and support lifecycle.
