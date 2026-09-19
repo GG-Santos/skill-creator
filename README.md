@@ -53,6 +53,6 @@ Each skill is distributed under Apache License 2.0. See
 `skill-creator/license.txt`, `skill-inspector/LICENSE`, and
 `skill-installer/LICENSE.txt`. `skill-inspector/NOTICE` records the NVIDIA
 SkillSpector provenance and the local integration changes; the SkillSpector CLI
-remains an external dependency. The reviewed baseline and the distinction
-between source-level contract testing and a live upstream run are documented in
+remains an external dependency. The reviewed baseline, contract tests, isolated
+live NVIDIA 2.11.2 run, and compatibility limits are documented in
 `skill-inspector/references/nvidia-parity.md`.
