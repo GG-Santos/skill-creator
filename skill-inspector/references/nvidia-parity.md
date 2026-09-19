@@ -8,10 +8,10 @@ This integration deliberately keeps NVIDIA SkillSpector as the detection engine 
 - Declared version: `2.11.2`.
 - Source identity: no Git metadata was present, so no commit hash is claimed.
 - License: Apache License 2.0.
-- Live-runtime status during development: the CLI was not preinstalled. The supplied source was run unmodified through an isolated, frozen, non-editable uv environment on supported Python 3.13. The adapter completed a real static scan of the inert safe fixture with scanner exit `0`, complete coverage, score `0`, severity `LOW`, and recommendation `SAFE`; finalization and independent installer validation produced `APPROVE`/`ALLOW` for the exact target digest.
+- Live-runtime status during development: the CLI was not preinstalled. The supplied source was run unmodified through frozen, non-editable uv environments on supported Python 3.13. The adapter completed a real static scan of the inert safe fixture with scanner exit `0`, complete coverage, score `0`, severity `LOW`, and recommendation `SAFE`; finalization and independent installer validation produced `APPROVE`/`ALLOW` for the exact target digest. A second live scan used NVIDIA's malicious regression fixture: SkillSpector returned exit `1`, score `93`, severity `CRITICAL`, and recommendation `DO_NOT_INSTALL`; source-aware finalization produced `REJECT`/`BLOCK`, the normalized report validated, and the installer independently refused it.
 - Python 3.14 note: the same isolated setup could not build upstream's pinned `yara-python==4.5.4` without Microsoft C++ Build Tools because a matching wheel was unavailable. This is an upstream runtime-distribution constraint, not an adapter failure; Python 3.13 supplied a wheel and was used for the live compatibility run.
 
-The live run complements source review and the contract-faithful fake CLI; it does not replace broader NVIDIA engine tests. Rerun it after upgrading SkillSpector through an independently authorized workflow.
+The live runs complement source review and the contract-faithful fake CLI; they do not replace broader NVIDIA engine tests. Rerun them after upgrading SkillSpector through an independently authorized workflow.
 
 ## Preserved behavior
 
@@ -45,4 +45,4 @@ These controls are intentionally more conservative than NVIDIA's narrative rubri
 
 ## Regression evidence
 
-The local test suite covers safe, dangerous, incomplete, failed, malformed, suppressed, LLM-enabled, transitive-truncated, oversized-output, timeout, target-mutation, symlink/junction, scanner-hijack, risk-boundary, occurrence-expansion, semantic-tamper, staged-install, batch-rollback, and curated-exemption cases. In addition, the isolated live run exercised the actual NVIDIA 2.11.2 command, JSON report, adapter normalization, semantic finalization, report validation, and installer consumer. The installer independently recomputes the same tree identity and revalidates report cross-fields rather than trusting the adapter's final labels.
+The local test suite covers safe, dangerous, incomplete, failed, malformed, suppressed, LLM-enabled, transitive-truncated, oversized-output, timeout, target-mutation, symlink/junction, scanner-hijack, risk-boundary, occurrence-expansion, semantic-tamper, staged-install, batch-rollback, and curated-exemption cases. In addition, the live safe and malicious-fixture runs exercised the actual NVIDIA 2.11.2 command, JSON reports, both upstream exit paths, adapter normalization, semantic finalization, report validation, and installer consumer. The installer independently recomputes the same tree identity and revalidates report cross-fields rather than trusting the adapter's final labels.
